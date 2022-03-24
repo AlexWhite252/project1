@@ -1,6 +1,7 @@
 import java.io.FileWriter
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.SparkSession
+import scala.io.StdIn._
 
 object apiproject {
   def main(args: Array[String]): Unit = {
@@ -29,6 +30,16 @@ object apiproject {
     spark.sparkContext.setLogLevel("ERROR")
 
     spark.sql("CREATE TABLE IF NOT EXISTS user(id INT, username STRING, password STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' LINES TERMINATED BY '\\n'")
+    val scanUser = readLine("Please enter your username: ")
+    val scanPass = readLine("Please enter your password: ")
+    val credentials = spark.sql(s"SELECT id FROM user WHERE username = '${scanUser}' AND password = '${scanPass}'")
+    try{
+      credentials.head().getInt(0)
+      print("Logged in successfully")
+    }
+    catch{
+      case e: NoSuchElementException => println("Invalid credentials")
+    }
     var df1=spark.read.option("Multiline",true).json(s"json/${call.substring(7,17)}_out.json")
     df1.show()
     var df2=spark.read.option("Multiline",true).json(s"json/${call2.substring(7,17)}_out.json")
