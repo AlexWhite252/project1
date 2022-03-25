@@ -1,6 +1,8 @@
 import java.io.FileWriter
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions.desc
+
 import scala.io.StdIn._
 import java.time.LocalDate
 
@@ -11,12 +13,16 @@ object apiproject {
     System.setProperty("hadoop.home.dir", "C:\\hadoop")
     val spark = SparkSession
       .builder
-      .appName("hello hive")
+      .appName("IGDB query")
       .config("spark.master", "local[*]")
       .enableHiveSupport()
       .getOrCreate()
     println("created spark session")
     spark.sparkContext.setLogLevel("ERROR")
+
+    //spark.sql("DROP TABLE IF EXISTS user")
+    spark.sql("CREATE TABLE IF NOT EXISTS user(id INT, username STRING, password STRING, access STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' LINES TERMINATED BY '\\n'")
+    //spark.sql("INSERT INTO user VALUES ('1', 'admin', 'password', 'admin')")
 
     if (accountCheck(spark) == true) {
       if(login(spark) == true) {
@@ -25,39 +31,25 @@ object apiproject {
         //Call apiConnect to get an access token for further API calls
         val acTkn = apiConnect(clientID)
 
-        var isFormat = false
-        var callYear = 0
-        val currentYear = LocalDate.now.getYear
-
-        while(isFormat != true){
-          try{
-            callYear = readLine("Please enter the year you wish to see data for: ").toInt
-            if(callYear < 1979 | callYear > currentYear){
-              println(s"Year out of range. Please enter year between 1979 and ${currentYear}")
-            }
-            else {
-              isFormat = true
-            }
-          }
-          catch{
-            case e: NumberFormatException => println("Year improperly formatted. Please enter a 4 digit integer")
-          }
-        }
-
+        //Call yearInput to get the user's chosen year
+        val callYear = yearInput()
 
         //The data we're querying from the API
-        val call = s"fields id, aggregated_rating, name, genres.name, release_dates.human ; where aggregated_rating > 75 & aggregated_rating != 100 & release_dates.y = ${callYear} & category = 0; sort aggregated_rating desc; limit 500;"
+        val call = s"fields id, aggregated_rating, name, genres.name, release_dates.human, platforms.name; where aggregated_rating > 75 & aggregated_rating != 100 & release_dates.y = ${callYear} & category = 0; sort aggregated_rating desc; limit 500;"
         val call2 = "fields id, name,release_dates.human, aggregated_rating; where name = *\"Mario\"* & aggregated_rating != null; sort aggregated_rating desc; limit 500;"
         //Call the API and pass it the necessary clientID and access token as well as the specific query we want
         apiCall(clientID, acTkn, call)
         apiCall(clientID, acTkn, call2)
 
-        spark.sql("CREATE TABLE IF NOT EXISTS user(id INT, username STRING, password STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' LINES TERMINATED BY '\\n'")
-
         var df1 = spark.read.option("Multiline", true).json(s"json/${call.substring(7, 17)}_out.json")
         df1.show()
         var df2 = spark.read.option("Multiline", true).json(s"json/${call2.substring(7, 17)}_out.json")
         df2.show()
+        df1.createGlobalTempView("games")
+
+        // Global temporary view is tied to a system preserved database `global_temp`
+        //spark.sql("SELECT platforms.name, AVG(aggregated_rating) AS avg_rating FROM global_temp.games GROUP BY platforms.name SORT BY avg_rating desc").show()
+        df1.groupBy("platforms.name").avg("aggregated_rating").sort(desc("platforms.name")).show()
       }
     }
 
@@ -96,14 +88,14 @@ object apiproject {
     var exitCheck = false
 
     while(accExist != 0 & accExist !=1 ){
-      var scanAcc = readLine("Do you have an account? (Y/N) ")
+      var scanAcc = readLine("Do you have an account? [Y]es/[N]o ")
       scanAcc match{
         //If user has an account, exit while loop with code 1
         case y if y matches "(?i)Y" => accExist = 1
         //If user does not have an account, check if they want to create one
         case n if n matches "(?i)N" =>
-          scanAcc = readLine("Would you like to create an account? (Y/N) ")
           while(exitCheck != true){
+            scanAcc = readLine("Would you like to create an account? [Y]es/[N]o ")
             scanAcc match{
               case y if y matches "(?i)Y" =>
                 val scanUser = readLine("Please enter your desired username: ")
@@ -112,13 +104,14 @@ object apiproject {
                 try{
                   //Check the user database if your desired username already exists, if it does then enter another
                   credentials.head().getInt(0)
-                  println("Username already exists, enter another username")
+                  println("Username already exists. Please attempt account creation again.")
                 }
                 catch{
                   //Check the user database if your desired username already exists, if it doesn't insert your user and pass into db
-                  case e: NoSuchElementException => println("Creating account")
-                  //Stretch goal - encrypt password, autoincrement userID
-                  spark.sql(s"INSERT INTO user VALUES (2, '${scanUser}', '${scanPass}')")
+                  case e: NoSuchElementException => println("Creating account...")
+                  //Stretch goal - encrypt password
+                  val userNum = spark.sql("SELECT MAX(user.id) FROM user").head().getInt(0)
+                  spark.sql(s"INSERT INTO user VALUES (${userNum + 1}, '${scanUser}', '${scanPass}', 'Basic')")
                   accExist = 1
                   exitCheck = true
                 }
@@ -126,11 +119,11 @@ object apiproject {
                 println("Thank you. Now exiting program.")
                 accExist = 0
                 exitCheck = true
-              case _ => println("Invalid input. Please input (Y/N)")
+              case _ => println("Invalid input. Please input [Y]es/[N]o ")
             }
           }
 
-        case _ => println("Invalid input. Please input (Y/N)")
+        case _ => println("Invalid input. Please input [Y]es/[N]o ")
       }
     }
     if(accExist == 1) true else false
@@ -157,11 +150,11 @@ object apiproject {
         //If credentials are not found on user database, user can choose to try again or exit the while loop with code 0
         case e: NoSuchElementException => println("Invalid credentials")
           while(exitCheck != true){
-            var scanMenu = readLine("Would you like to exit the program? (Y/N) ")
+            var scanMenu = readLine("Would you like to exit the program? [Y]es/[N]o ")
             scanMenu match{
               case y if y matches "(?i)Y" => validCred = 0; exitCheck = true
               case n if n matches "(?i)N" => println("Ok, returning to login. "); exitCheck = true
-              case _ =>  println("Invalid input. Please input (Y/N)")
+              case _ =>  println("Invalid input. Please input [Y]es/[N]o ")
             }
           }
 
@@ -170,5 +163,29 @@ object apiproject {
 
     //Return true if user logged in successfully, false if they failed to login
     if(validCred == 1) true else false
+  }
+
+  //Get input from user for year, check if input is valid, returns year
+  def yearInput(): Int={
+
+    var isFormat = false
+    var callYear = 0
+    val currentYear = LocalDate.now.getYear
+
+    while(isFormat != true){
+      try{
+        callYear = readLine("Please enter the year you wish to see data for: ").toInt
+        if(callYear < 1979 | callYear > currentYear){
+          println(s"Year out of range. Please enter year between 1979 and ${currentYear}")
+        }
+        else {
+          isFormat = true
+        }
+      }
+      catch{
+        case e: NumberFormatException => println("Year improperly formatted. Please enter a 4 digit integer")
+      }
+    }
+    return callYear
   }
 }
