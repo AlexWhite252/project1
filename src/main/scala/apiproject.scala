@@ -1,7 +1,7 @@
 import java.io.FileWriter
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.desc
+import org.apache.spark.sql.functions._
 
 import scala.io.StdIn._
 import java.time.LocalDate
@@ -17,7 +17,7 @@ object apiproject {
       .config("spark.master", "local[*]")
       .enableHiveSupport()
       .getOrCreate()
-    println("created spark session")
+    println("Created Spark session\n")
     spark.sparkContext.setLogLevel("ERROR")
 
     //spark.sql("DROP TABLE IF EXISTS user")
@@ -34,39 +34,68 @@ object apiproject {
         //Call yearInput to get the user's chosen year
         val callYear = yearInput()
 
-        //The data we're querying from the API
-        val call = s"fields id, aggregated_rating, name, genres.name, release_dates.human, platforms.name; where aggregated_rating > 75 & aggregated_rating != 100 & release_dates.y = ${callYear} & category = 0; sort aggregated_rating desc; limit 500;"
-        val call2 = "fields id, name,release_dates.human, aggregated_rating; where name = *\"Mario\"* & aggregated_rating != null; sort aggregated_rating desc; limit 500;"
         //Call the API and pass it the necessary clientID and access token as well as the specific query we want
-        apiCall(clientID, acTkn, call)
-        apiCall(clientID, acTkn, call2)
+        apiCall(clientID, acTkn, callYear)
 
-        var df1 = spark.read.option("Multiline", true).json(s"json/${call.substring(7, 17)}_out.json")
-        df1.show()
-        var df2 = spark.read.option("Multiline", true).json(s"json/${call2.substring(7, 17)}_out.json")
-        df2.show()
-        df1.createGlobalTempView("games")
+        println("\nLoading JSON data into dataframes...\n")
+        var df1 = spark.read.option("Multiline", true).json(s"json/${callYear}_out.json")
+        //df1.createGlobalTempView("games")
 
-        // Global temporary view is tied to a system preserved database `global_temp`
-        //spark.sql("SELECT platforms.name, AVG(aggregated_rating) AS avg_rating FROM global_temp.games GROUP BY platforms.name SORT BY avg_rating desc").show()
-        df1.groupBy("platforms.name").avg("aggregated_rating").sort(desc("platforms.name")).show()
+        spark.sql("DROP TABLE IF EXISTS bucketed")
+        df1.write.format("parquet").partitionBy("category").bucketBy(5, "platforms").sortBy("name").saveAsTable("bucketed")
+        //spark.sql("SHOW PARTITIONS bucketed").show()
+
+        sparkQueries(callYear, spark)
       }
     }
 
     spark.close()
   }
 
+  //Query the bucketed table with a selection of queries
+  def sparkQueries(callYear: Int, spark: SparkSession):Unit={
+    println(s"All the game data from ${callYear} in the bucketed and partitioned table:")
+    spark.sql("SELECT * FROM bucketed").show()
+
+    println(s"The average rating of games released in ${callYear} for each group of platforms:")
+    spark.sql("SELECT platforms.name, AVG(aggregated_rating) AS avg_rating FROM bucketed GROUP BY platforms.name ORDER BY avg_rating desc").show()
+
+    println(s"Mario games released in ${callYear}")
+    spark.sql("SELECT aggregated_rating, genres.name, name, platforms.name, release_dates FROM bucketed WHERE name LIKE '%Mario%' ORDER BY name ").show()
+
+
+    println(s"The number of games in each category released in ${callYear}")
+    spark.sql("SELECT COUNT(category) as category_count, category FROM bucketed GROUP BY category ORDER BY category_count desc").show()
+
+    println(s"Every shooter released in ${callYear} sorted by rating")
+    spark.sql("SELECT name, aggregated_rating, genres.name FROM bucketed WHERE array_contains(genres.name, 'Shooter') ORDER BY aggregated_rating desc").show()
+
+    println(s"The number of games released per genre group in ${callYear}")
+    spark.sql("SELECT COUNT(genres) as genre_count, genres.name FROM bucketed GROUP BY genres ORDER BY genre_count desc").show()
+
+    println(s"The top 10 most reviewed games released in ${callYear} ")
+    spark.sql("SELECT aggregated_rating, genres.name, name, platforms.name, rating_count FROM bucketed ORDER BY rating_count desc LIMIT 10").show()
+
+    println(s"The number of games containing a number in the title in ${callYear}")
+    spark.sql("SELECT COUNT(name) AS title_count FROM bucketed WHERE name LIKE '%\\d%'").show()
+  }
+
   //Connects to the API using clientID and returns an accTkn
   def apiConnect(clientID: String): String ={
+    println("\nConnecting to API...")
     val header = requests.post(s"https://id.twitch.tv/oauth2/token?client_id=${clientID}&client_secret=33yjz3ougtos08iwwr2jk6igvcpifx&grant_type=client_credentials")
     val parsed = ujson.read(header.text)
-    println(parsed.render(indent = 4))
+    //println(parsed.render(indent = 4))
+    println("API access approved.")
     parsed("access_token").str
   }
 
   //Handles API calls and writes the returned JSON data to a JSON file
   //Stretch goal - add functionality to return more than 500 rows at a time (look at pagination in IGDB docs)
-  def apiCall(clientID: String, acTkn: String, call: String): Unit={
+  def apiCall(clientID: String, acTkn: String, callYear: Int): Unit={
+    //The data we're querying from the API
+    val call = s"fields id, aggregated_rating, name, genres.name, release_dates.human, platforms.name, category, rating_count; where aggregated_rating > 60 & aggregated_rating != 100 & release_dates.y = ${callYear}; sort aggregated_rating desc; limit 500;"
+    println("\nCalling API...")
     val games = requests.post("https://api.igdb.com/v4/games/",
       data = call,
       headers = Map(
@@ -75,10 +104,11 @@ object apiproject {
       ))
     val gameParsed = ujson.read(games.text)
     //println(gameParsed.render(indent = 4))
-    val writer = new FileWriter(s"json/${call.substring(7,17)}_out.json")
+    val writer = new FileWriter(s"json/${callYear}_out.json")
     ujson.writeTo(gameParsed, writer, 4)
     writer.flush()
     writer.close()
+    println("API call done. Writing results to JSON file.")
   }
 
   //Checks if user has an account, and if they don't allow them to create one.
@@ -93,7 +123,7 @@ object apiproject {
         //If user has an account, exit while loop with code 1
         case y if y matches "(?i)Y" => accExist = 1
         //If user does not have an account, check if they want to create one
-        case n if n matches "(?i)N" =>
+        case n if n matches "(?i)N%" =>
           while(exitCheck != true){
             scanAcc = readLine("Would you like to create an account? [Y]es/[N]o ")
             scanAcc match{
@@ -136,7 +166,7 @@ object apiproject {
     var exitCheck = false
 
     while(validCred != 0 & validCred != 1){
-      val scanUser = readLine("Please enter your username: ")
+      val scanUser = readLine("\nPlease enter your username: ")
       val scanPass = readLine("Please enter your password: ")
       val credentials = spark.sql(s"SELECT id FROM user WHERE username = '${scanUser}' AND password = '${scanPass}'")
       try{
