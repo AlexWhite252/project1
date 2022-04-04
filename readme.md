@@ -1,1 +1,1 @@
-This project utilizes Spark SQL and Hive in order to analyze data retrived from the IGDB API. 
+This project utilizes Spark SQL and Hive in order to analyze data retrieved from an API. Here I connected to the IGDB (Internet Game Database) API in order to get information on various games corresponding to user input. This information is written to a json file, and then stored in a table. Using this table filled with data I ran several queries on it using Hive and Spark. 
