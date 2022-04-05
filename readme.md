@@ -35,7 +35,9 @@ Open project in an IDE and run it
 
 ## Usage
 
-When you run the project you'll be prompted for account information. 
-Once you create an account or login to your account you'll be prompted to enter a year. 
-After entering a year the program will run through the rest of its code and exit. 
+When you run the project you'll be prompted for account information
+
+Once you create an account or login to your account you'll be prompted to enter a year
+
+After entering a year the program will run through the rest of its code and exit 
 
