@@ -22,6 +22,7 @@ Future features:
 * Improved queries taking more user input
 * Pagination support for API data, allowing us to use larger data sets
 * Create an executable file 
+* Menu system
 
 ## Getting Started 
 
